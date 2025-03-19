@@ -134,7 +134,8 @@ int main(int argc, char* argv[])
 	signal(SIGALRM, signal_handler);
 	alarm(60);
 
-	msgbuffer buf0, buf1;
+	msgbuffer buf;
+	msgbuffer rcvbuf;
 	int msqid;
 	key_t key;
 	system("touch msgq.txt");
@@ -392,7 +393,47 @@ int main(int argc, char* argv[])
 				totDiffSec--;
 				totDiffNs += 1000000000;
 			}
-			//Calculate total time since last fork in ns
+
+			int nextChild = -1;
+			for (int i = 0; i < options.proc; i++)
+			{
+				if (processTable[i].occupied == 1)
+				{
+					nextChild = 1;
+					break;
+				}
+			}
+
+			if (nextChild != -1)
+			{
+				pid_t nChildPid = processTable[nextChild].pid;
+				printf("Sending message to child %d\n", nChildPid);
+
+				buf.mtype = nChildPid;
+				buf.intData = nChildPid;
+
+				strcpy(buf.strData, "CONTINUE");
+				if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
+				{
+					perror("msgsnd failed");
+					exit(1);
+				}
+
+				// Wait for response from child
+				if (msgrcv(msqid, &rcvbuf, sizeof(msgbuffer) - sizeof(long), getpid(), 0) == -1)
+				{
+					perror("msgrcv failed");
+					exit(1);
+				}
+				printf("Received message from child %d: %s, intData: %d\n", nChildPid, rcvbuf.strData, rcvbuf.intData);
+
+				
+			}
+
+
+
+
+
 			long long int totDiff = totDiffSec * 1000000000 + totDiffNs;
 
 			if (totDiff < options.interval) // Determine if time of last fork was shorter than specified interval time
@@ -442,6 +483,9 @@ int main(int argc, char* argv[])
 				// Update time since last fork to current time in system
 				lastForkSec = shm_ptr[0];
 				lastForkNs = shm_ptr[1];
+
+
+
 			}
 		}
 
