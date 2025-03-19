@@ -1,13 +1,18 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/wait.h>
+#include <sys/types.h>
+#include <sys/msg.h>
 #include <cstring>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <unistd.h>
 #include <signal.h>
 #include <time.h>
 #include <string>
+
+#define PERMS 0644
 
 using namespace std;
 
@@ -31,6 +36,13 @@ typedef struct
 	int startNano; // Time when it was forked
 	int messagesSent; // Total times oss sent a message to it
 } PCB;
+
+typedef struct msgbuffer 
+{
+	long mtype;
+	char strData[100];
+	int intData;
+} msgbuffer;
 
 PCB* processTable;
 int *shm_ptr;
@@ -121,6 +133,27 @@ int main(int argc, char* argv[])
 	// Signal that will terminate program after 60 sec (real time)
 	signal(SIGALRM, signal_handler);
 	alarm(60);
+
+	msgbuffer buf0, buf1;
+	int msqid;
+	key_t key;
+	system("touch msgq.txt");
+
+	// Get key for message queue
+	if ((key = ftok("msgq.txt", 1)) == -1)
+	{
+		perror("ftok");
+		exit(1);
+	}
+
+	// Create message queue
+	if ((msqid = msgget(key, PERMS | IPC_CREAT)) == -1)
+	{
+		perror("msgget in parent\n");
+		exit(1);
+	}	
+
+	printf("Message queue set up\n");
 
 	// Structure to hold values for options in command line argument
 	options_t options;
