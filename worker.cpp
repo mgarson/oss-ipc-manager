@@ -69,6 +69,9 @@ int main(int argc, char* argv[])
 	}
 
 	printf("Child %d has access to the queue.\n", getpid());
+	
+
+	
 
 	// Receive a message, but only one for us
 	if (msgrcv(msqid, &buf, sizeof(msgbuffer), getpid(), 0) == -1)
@@ -83,14 +86,13 @@ int main(int argc, char* argv[])
 	// Send message back to parent
 	buf.mtype = getppid();
 	buf.intData = getppid();
-	strcpy(buf.strData, "Message back to muh parent\n");
+	strcpy(buf.strData, "DONE");
 
 	if (msgsnd(msqid, &buf, sizeof(msgbuffer)-sizeof(long), 0) == -1)
 	{
 		perror("msgsnd to parent failed.\n");
 		exit(1);
 	}
-
 	printf("Child %d is now ending\n", getpid());
 	return 0;
 }

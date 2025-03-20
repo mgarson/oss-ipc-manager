@@ -379,27 +379,20 @@ int main(int argc, char* argv[])
 		}
 		// Loop that will continue until both total amount of processes is greater than/equal to specified amount
 		// and current processes running is greater than/equal to specified amount
-		while (total < options.proc && running < options.simul)
+		//while (total < options.proc && running < options.simul)
 		{
 			// Update system clock
-			incrementClock();
+//			incrementClock();
 
 			// Calculate time since last fork for sec and ns
-			long long int totDiffSec = shm_ptr[0] - lastForkSec;
-			long long int totDiffNs = shm_ptr[1] - lastForkNs;
 			// Adjust ns value for subtraction resulting in negative value
-			if (totDiffNs < 0)
-			{
-				totDiffSec--;
-				totDiffNs += 1000000000;
-			}
 
 			int nextChild = -1;
 			for (int i = 0; i < options.proc; i++)
 			{
 				if (processTable[i].occupied == 1)
 				{
-					nextChild = 1;
+					nextChild = i;
 					break;
 				}
 			}
@@ -426,17 +419,75 @@ int main(int argc, char* argv[])
 					exit(1);
 				}
 				printf("Received message from child %d: %s, intData: %d\n", nChildPid, rcvbuf.strData, rcvbuf.intData);
-
+				
+				if (strcmp(rcvbuf.strData, "DONE") == 0)
+				{
+					printf("Child %d has decided to terminate.\n", nChildPid);
+					wait(0);
+					processTable[nextChild].occupied == 0;
+					running--;
+				}
 				
 			}
 
+			if (total < options.proc && running < options.simul)
+			{
 
 
+				long long int totDiffSec = shm_ptr[0] - lastForkSec;
+				long long int totDiffNs = shm_ptr[1] - lastForkNs;
+				if (totDiffNs < 0)
+				{
+					totDiffSec--;
+					totDiffNs += 1000000000;
+				}
 
+				long long int totDiff = totDiffSec * 1000000000 + totDiffNs;
+				if (totDiff >= options.interval)
+				{
+					//Fork new child
+					pid_t childPid = fork();
+					if (childPid == 0) // Child process
+					{
+						char* args[] = {"./worker", arg, NULL};
+						execvp(args[0], args);
+						fprintf(stderr, "Exec failed, terminating!\n");
+						exit(1);
+					}
+					else // Parent process
+					{
+						total++;
+						running++;
+						incrementClock();
+						// Update table with new child info
+						for (int i = 0; i < options.proc; i++)
+						{
+							if (processTable[i].occupied == 0)
+							{
+								processTable[i].occupied = 1;
+								processTable[i].pid = childPid;
+								processTable[i].startSeconds = shm_ptr[0];
+								processTable[i].startNano = shm_ptr[i];
+								break;
+							}
+						}
 
-			long long int totDiff = totDiffSec * 1000000000 + totDiffNs;
+						printTable(options.proc);
+						lastForkSec = shm_ptr[0];
+						lastForkNs = shm_ptr[1];
 
-			if (totDiff < options.interval) // Determine if time of last fork was shorter than specified interval time
+						buf.mtype = childPid;
+						buf.intData = childPid;
+						strcpy(buf.strData, "CONTINUE");
+						if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
+						{
+							perror("msgsnd to new child failed\n");
+							exit(1);
+						}
+					}
+				}
+			}
+			/*if (totDiff < options.interval) // Determine if time of last fork was shorter than specified interval time
 			{
 				// If shorter, means not enough time has passed to launch next child
 				// Print error message and break
@@ -487,8 +538,9 @@ int main(int argc, char* argv[])
 
 
 			}
-		}
+		
 
+		}
 		int status;
 		// Wait for any child process to finish and set its pid to finishedChild
 		pid_t finishedChild = waitpid(-1, &status, WNOHANG);
@@ -508,8 +560,8 @@ int main(int argc, char* argv[])
 		}
 		incrementClock();
 
-	}
-	
+*/	}
+}
 	return 0;
 
 }
