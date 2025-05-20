@@ -1,3 +1,12 @@
+// Operating Systems Project 3
+// Author: Maija Garson
+// Date: 03/21/2025
+// Descriptions: A program that takesin command line options to run child processes up to a given amount. These processes will run
+// simultaneously up to the specified amount. The child process will continue to run up until a specified time and will execute at
+// specified intervals. This program also maintains and increments a clock that the children use to keep track of time. All relevant
+// info is stored in a Process Control Block (PCB) table that prints every half second. This program will send and receive messages
+// to/from the child process(es) incrementally to determine when any child process has ended.
+
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/wait.h>
@@ -37,18 +46,27 @@ typedef struct
 	int messagesSent; // Total times oss sent a message to it
 } PCB;
 
+// Message buffer for communication between OSS and child processes
 typedef struct msgbuffer 
 {
-	long mtype;
-	char strData[100];
-	int intData;
+	long mtype; // Message type used for message queue
+	char strData[100]; // String data to be sent. Will either be "0"(finished working) or "1"(still working)
+	int intData; // Integer data to be sent in the message
 } msgbuffer;
 
-PCB* processTable;
-int *shm_ptr;
+// Global variables
+PCB* processTable; // Process control block table to track child processes
 
-int sec = 0;
-int nanoSec = 0;
+int *shm_ptr; // Shared memory pointer to store system clock
+int shm_id; // Shared memory ID
+
+int running = 0; // Number of processes currently running
+int sec = 0; // System clock seconds
+int nanoSec = 0; // System clock nanoseconds
+int increm; // Clock increment (based on number of children currently running)
+
+FILE* logfile = NULL; // Pointer to logfile
+bool logging = false; // Bool to determine if output should also print to logfile
 
 void print_usage(const char * app)
 {
@@ -60,14 +78,23 @@ void print_usage(const char * app)
 
 }
 
+// Function to increment system clock in seconds and nanoseconds
+// Increments based on how many child processes are currently running
 void incrementClock()
 {
-	nanoSec += 1000;
-	if (nanoSec >= 1000000000)
+	// Calculate increment based on number of currently running chldren
+	if (running > 0) increm = 250000000 / running;
+	else increm = 250000000;
+
+	// Update nanoseconds and check for overflow
+	nanoSec += increm;
+	if (nanoSec >= 1000000000) // Determines if nanosec is gt 1 billion, meaning it should convert to 1 second
 	{
 		nanoSec -= 1000000000;
 		sec++;
 	}
+
+	// Update shared memory pointers with calculated time
 	shm_ptr[0] = sec;
 	shm_ptr[1] = nanoSec;
 }
@@ -78,7 +105,7 @@ void shareMem()
 	// Generate key
 	const int sh_key = ftok("main.c", 0);
 	// Create shared memory
-	int shm_id = shmget(sh_key, sizeof(int) * 2, IPC_CREAT | 0666);
+	shm_id = shmget(sh_key, sizeof(int) * 2, IPC_CREAT | 0666);
 	if (shm_id <= 0) // Check if shared memory get failed
 	{
 		// If true, print error message and exit
@@ -102,21 +129,50 @@ void shareMem()
 // FUnction to print formatted process table
 void printTable(int n)
 {
-	printf("OSS PID: %d SysClockS: %u SysClockNano: %u\n Process Table:\n", getpid(), shm_ptr[0], shm_ptr[1]);
-	printf("Entry\tOccupied\tPID\tStartS\tStartNs\n");
-	for (int i = 0; i < n; i++)
+	if (logging) // Determine if output should also print to logfile
 	{
-		if(processTable[i].occupied == 1)
-			printf("%d\t%d\t\t%d\t%u\t%u\n", i, processTable[i].occupied, processTable[i].pid, processTable[i].startSeconds, processTable[i].startNano);
+		// Print to console
+		printf("OSS PID: %d SysClockS: %u SysClockNano: %u\n Process Table:\n", getpid(), shm_ptr[0], shm_ptr[1]);
+		printf("Entry\tOccupied\tPID\tStartS\tStartNs\n");
+	
+		// Print to log file as well
+		fprintf(logfile, "OSS PID: %d SysClockS: %u SysClockNano: %u\n Process Table:\n", getpid(), shm_ptr[0], shm_ptr[1]);
+		fprintf(logfile,"Entry\tOccupied\tPID\tStartS\tStartNs\n");
 
+		for (int i = 0; i < n; i++)
+		{
+			// Print table only if occupied by process
+			if (processTable[i].occupied == 1)
+			{
+				printf("%d\t%d\t\t%d\t%u\t%u\n", i, processTable[i].occupied, processTable[i].pid, processTable[i].startSeconds, processTable[i].startNano);
+				fprintf(logfile, "%d\t%d\t\t%d\t%u\t%u\n", i, processTable[i].occupied, processTable[i].pid, processTable[i].startSeconds, processTable[i].startNano);
+			}
+		}
+		printf("\n");
+		fprintf(logfile, "\n");
 	}
-	printf("\n");
+	else // Print only to console
+	{
+		printf("OSS PID: %d SysClockS: %u SysClockNano: %u\n Process Table:\n", getpid(), shm_ptr[0], shm_ptr[1]);
+		printf("Entry\tOccupied\tPID\tStartS\tStartNs\n");
+		for (int i = 0; i < n; i++)
+		{
+			// Print table only if occupied by process
+			if(processTable[i].occupied == 1)
+				printf("%d\t%d\t\t%d\t%u\t%u\n", i, processTable[i].occupied, processTable[i].pid, processTable[i].startSeconds, processTable[i].startNano);
+
+		}
+		printf("\n");
+	}
 }
 
+// Signal handler to terminate all processes after 60 seconds in real time
 void signal_handler(int sig)
 {
 	printf("60 seconds have passed, process(es) will now terminate.\n");
 	pid_t pid;
+
+	// Loop through process table to find all processes still running and terminate
 	for (int i = 0; i < sizeof(processTable); i++)
 	{
 		if(processTable[i].occupied == 1)
@@ -125,6 +181,7 @@ void signal_handler(int sig)
 		if (pid > 0)
 			kill(pid, SIGKILL);
 	}
+
 	exit(1);
 }
 
@@ -134,10 +191,12 @@ int main(int argc, char* argv[])
 	signal(SIGALRM, signal_handler);
 	alarm(60);
 
-	msgbuffer buf;
-	msgbuffer rcvbuf;
-	int msqid;
-	key_t key;
+	msgbuffer buf; // Buffer for sending messages to child processes
+	msgbuffer rcvbuf; // Buffer for receiving messages from child processes
+	int msqid; // Queue ID for communication
+	key_t key; // Key to access queue
+
+	// Create file to track message queue
 	system("touch msgq.txt");
 
 	// Get key for message queue
@@ -167,11 +226,11 @@ int main(int argc, char* argv[])
 
 	// Values to keep track of child iterations
 	int total = 0; // Total amount of processes
-	int running = 0; // Amount of processes currently running
 	int lastForkSec = 0; // Time in sec since last fork
 	int lastForkNs = 0; // Time in ns since last fork
+	int msgsnt = 0;
 
-	const char optstr[] = "hn:s:t:i:"; // Options h, n, s, t, i, f
+	const char optstr[] = "hn:s:t:i:f"; // Options h, n, s, t, i, f
 	char opt;
 
 	//Parse command line arguments with getopt
@@ -321,7 +380,17 @@ int main(int argc, char* argv[])
 				// Sets interval to optarg and breaks
 				options.interval = atoi(optarg);
 				break;
-			// case 'f':
+
+			 case 'f': // Print output also to logfile if option is passed
+				logging = true;
+				// Open logfile
+				logfile = fopen("ossLog.txt", "w"); // Open logfile
+				if (logfile == NULL)
+				{
+					fprintf(stderr, "Failed to open log file.\n");
+					return EXIT_FAILURE;
+				}
+				break;
 
 			default: 
 				// Prints message that option given is invalid, prints usage, and exits program
@@ -344,6 +413,8 @@ int main(int argc, char* argv[])
 	// Initialize process table, all occupied values set to 0
 	for (int i = 0; i < options.proc; i++)
 		processTable[i].occupied = 0;
+
+	// Convert timelim to string to be passed to child process
 	string str = to_string(options.timelim);
 
 	// Creates new char array to hold value to be passed into child program
@@ -357,7 +428,6 @@ int main(int argc, char* argv[])
 	{
 		// Update system clock
 		incrementClock();
-
 		// Calculate time since last print for sec and ns
 		long long int printDiffSec = shm_ptr[0] - lastPrintSec;
 		long long int printDiffNs = shm_ptr[1] - lastPrintNs;
@@ -377,191 +447,197 @@ int main(int argc, char* argv[])
 			lastPrintSec = shm_ptr[0];
 			lastPrintNs = shm_ptr[1];
 		}
-		// Loop that will continue until both total amount of processes is greater than/equal to specified amount
-		// and current processes running is greater than/equal to specified amount
-		//while (total < options.proc && running < options.simul)
+
+		// Loop through table to check each slot 
+		for (int i = 0; i < options.proc; i++)
 		{
-			// Update system clock
-//			incrementClock();
+			if (processTable[i].occupied == 1) // Determine if slot is occupied, meaning child is running
+			{			
+				pid_t nChildPid = processTable[i].pid; 
 
-			// Calculate time since last fork for sec and ns
-			// Adjust ns value for subtraction resulting in negative value
-
-			int nextChild = -1;
-			for (int i = 0; i < options.proc; i++)
-			{
-				if (processTable[i].occupied == 1)
-				{
-					nextChild = i;
-					break;
-				}
-			}
-
-			if (nextChild != -1)
-			{
-				pid_t nChildPid = processTable[nextChild].pid;
-				printf("Sending message to child %d\n", nChildPid);
-
+				// Set info to send message to child
 				buf.mtype = nChildPid;
 				buf.intData = nChildPid;
+				strcpy(buf.strData, "1");
 
-				strcpy(buf.strData, "CONTINUE");
-				if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
+				// Send message to chld process
+				if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) != -1)
 				{
-					perror("msgsnd failed");
-					exit(1);
+					msgsnt++; // Increment amount of messages sent
+					printf("Sending message to worker %d PID %d at time %d:%d\n", i, buf.intData, shm_ptr[0], shm_ptr[1]);
+					if (logging)
+						fprintf(logfile, "Sending message to worker %d PID %d at time %d:%d\n", i, buf.intData, shm_ptr[0], shm_ptr[1]);
 				}
 
 				// Wait for response from child
-				if (msgrcv(msqid, &rcvbuf, sizeof(msgbuffer) - sizeof(long), getpid(), 0) == -1)
+				if (msgrcv(msqid, &rcvbuf, sizeof(msgbuffer) - sizeof(long), getpid(), 0) != -1)
 				{
-					perror("msgrcv failed");
-					exit(1);
-				}
-				printf("Received message from child %d: %s, intData: %d\n", nChildPid, rcvbuf.strData, rcvbuf.intData);
-				
-				if (strcmp(rcvbuf.strData, "DONE") == 0)
-				{
-					printf("Child %d has decided to terminate.\n", nChildPid);
-					wait(0);
-					processTable[nextChild].occupied == 0;
-					running--;
-				}
-				
-			}
-
-			if (total < options.proc && running < options.simul)
-			{
-
-
-				long long int totDiffSec = shm_ptr[0] - lastForkSec;
-				long long int totDiffNs = shm_ptr[1] - lastForkNs;
-				if (totDiffNs < 0)
-				{
-					totDiffSec--;
-					totDiffNs += 1000000000;
-				}
-
-				long long int totDiff = totDiffSec * 1000000000 + totDiffNs;
-				if (totDiff >= options.interval)
-				{
-					//Fork new child
-					pid_t childPid = fork();
-					if (childPid == 0) // Child process
+					// Print message from child
+					printf("Received message from child %d PID %d at time %d:%d\n", i, rcvbuf.intData, shm_ptr[0], shm_ptr[1]);
+					if (logging)
+						fprintf(logfile, "Received message from child %d PID %d at time %d:%d\n", i, rcvbuf.intData, shm_ptr[0], shm_ptr[1]);
+					
+					// Determine if child sent 0, meaning child will terminate
+					if (strcmp(rcvbuf.strData, "0") == 0)
 					{
-						char* args[] = {"./worker", arg, NULL};
-						execvp(args[0], args);
-						fprintf(stderr, "Exec failed, terminating!\n");
-						exit(1);
-					}
-					else // Parent process
-					{
-						total++;
-						running++;
-						incrementClock();
-						// Update table with new child info
-						for (int i = 0; i < options.proc; i++)
+						// Wait for child to terminate
+						wait(0);
+						// Find terminated child in table and update occupied value
+						for (int j = 0; j < options.proc; j++)
 						{
-							if (processTable[i].occupied == 0)
+							if(processTable[j].pid == rcvbuf.intData)
 							{
-								processTable[i].occupied = 1;
-								processTable[i].pid = childPid;
-								processTable[i].startSeconds = shm_ptr[0];
-								processTable[i].startNano = shm_ptr[i];
+								processTable[j].occupied = 0;
 								break;
 							}
 						}
+						// Decrement amount of processes currently running
+						running--;
+					}
+				}
+			}
+		}
+		// Loop that will continue until both total amount of processes is greater than/ equal to specified amount
+		// and current processes running is greater than/ equal to specified amount
+		while (total < options.proc && running < options.simul)
+		{	
+			// Increment system clock
+			incrementClock();
 
-						printTable(options.proc);
-						lastForkSec = shm_ptr[0];
-						lastForkNs = shm_ptr[1];
+			// Calculate time since last print for sec and ns
+			long long int totDiffSec = shm_ptr[0] - lastForkSec;
+			long long int totDiffNs = shm_ptr[1] - lastForkNs;
+			// Adjust ns value for subtraction resulting in negative value
+			if (totDiffNs < 0)
+			{
+				totDiffSec--;
+				totDiffNs += 1000000000;
+			}
+			// Calculate total time since last print in ns
+			long long int totDiff = totDiffSec * 1000000000 + totDiffNs;
 
-						buf.mtype = childPid;
-						buf.intData = childPid;
-						strcpy(buf.strData, "CONTINUE");
-						if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) == -1)
+			if (totDiff >= options.interval) // Determine if time of last print was longer than specified interval
+			{
+				//Fork new child
+				pid_t childPid = fork();
+				if (childPid == 0) // Child process
+				{
+					// Create array of arguments to pass to exec. "./worker" is the program to execute, arg is the command line argument
+					// to be passed to "./worker", and NULL shows it is the end of the argument list
+					char* args[] = {"./worker", arg, NULL};
+					// Replace current process with "./worker" process and pass iteration amount as parameter
+					execvp(args[0], args);
+					// If this prints, means exec failed
+					// Prints error message and exits
+					fprintf(stderr, "Exec failed, terminating!\n");
+					exit(1);
+				}
+				else // Parent process
+				{
+					// Increment total created processes and running processes
+					total++;
+					running++;
+					
+					// Increment clock
+					incrementClock();
+
+					// Update table with new child info
+					for (int i = 0; i < options.proc; i++)
+					{
+						if (processTable[i].occupied == 0)
 						{
-							perror("msgsnd to new child failed\n");
-							exit(1);
+							processTable[i].occupied = 1;
+							processTable[i].pid = childPid;
+							processTable[i].startSeconds = shm_ptr[0];
+							processTable[i].startNano = shm_ptr[1];
+							break;
+						}
+					}
+
+					// Update time since last fork to current system time
+					lastForkSec = shm_ptr[0];
+					lastForkNs = shm_ptr[1];
+
+				}
+			}
+			
+			// Loop through table to check each slot for running processes
+			for (int i = 0; i < options.proc; i++)
+			{
+				if (processTable[i].occupied == 1) // Determine if slot is occupied, meaning child is running
+				{
+					pid_t childP = processTable[i].pid;
+
+					// Set info to send message to child
+					buf.mtype = childP;
+					buf.intData = childP;
+					strcpy(buf.strData, "1");
+
+					// Send message to child process
+					if (msgsnd(msqid, &buf, sizeof(msgbuffer) - sizeof(long), 0) != -1)
+					{
+						msgsnt++; // Increment amount of messages sent
+						printf("Sending message to worker %d PID %d at time %d:%d\n", i, buf.intData, shm_ptr[0], shm_ptr[1]);
+						if (logging)
+							fprintf(logfile, "Sending message to worker %d PID %d at time %d:%d\n", i, buf.intData, shm_ptr[0], shm_ptr[1]);
+					}
+					// Wait for response from child
+					if (msgrcv(msqid, &rcvbuf, sizeof(msgbuffer) - sizeof(long), getpid(), 0) != -1)
+					{
+						// Print message from child
+						printf("Receiving message from worker %d PID %d at time %d:%d\n", i, rcvbuf.intData, shm_ptr[0], shm_ptr[1]);
+						if (logging)
+							fprintf(logfile, "Receiving message from worker %d PID %d at time %d:%d\n", i, rcvbuf.intData, shm_ptr[0], shm_ptr[1]);
+						
+						// Determine if child sent 0, meaning child will terminate
+						if (strcmp(rcvbuf.strData, "0") == 0)
+						{
+							// Wait for child to terminate
+							wait(0);
+							// Find terminated child in table and update occupied value to 0
+							for (int j = 0; j < options.proc; j++)
+							{
+								if (processTable[j].pid == rcvbuf.intData)
+								{
+									processTable[j].occupied = 0;
+									break;
+								}
+							}
+							// Decrement amount of processes currently running
+							running--;
 						}
 					}
 				}
 			}
-			/*if (totDiff < options.interval) // Determine if time of last fork was shorter than specified interval time
-			{
-				// If shorter, means not enough time has passed to launch next child
-				// Print error message and break
-				fprintf(stderr, "Not enough time to fork new child. Current diff: %d\n", totDiff);
-				break;
-			}
-
-			// Fork a new child process
-			pid_t childPid = fork();
-			if (childPid == 0) // Child process
-			{
-				// Create array of arguments to pass to exec. "./worker" is the program to execute, arg is the command line argument 
-				// to be passed to "./worker", and NULL shows it is the end of the argument list
-				char* args[] = {"./worker", arg, NULL};
-
-				// Replace current process with "./worker" process and pass iteration amount as parameter
-				execvp(args[0], args);
-				// If this prints, means exec failed.
-				// Prints error message and exits
-				fprintf(stderr, "Exec failed, terminating!\n");
-				exit(1);
-			}
-			else // Parent process
-			{
-				// Increment total created processes and running processes
-				total++;
-				running++;
-
-				// Increment clock
-				incrementClock();
-
-				// Update forked process in process table
-				for (int i = 0; i < options.proc; i++)
-				{
-					if (processTable[i].occupied == 0)
-					{
-						processTable[i].occupied = 1;
-						processTable[i].pid = childPid;
-						processTable[i].startSeconds = shm_ptr[0];
-						processTable[i].startNano = shm_ptr[1];
-						break;
-					}
-				}
-				// Update time since last fork to current time in system
-				lastForkSec = shm_ptr[0];
-				lastForkNs = shm_ptr[1];
-
-
-
-			}
-		
-
 		}
-		int status;
-		// Wait for any child process to finish and set its pid to finishedChild
-		pid_t finishedChild = waitpid(-1, &status, WNOHANG);
-		// Ensures a valid pid was returned, meaning chld process successfully ended
-		if (finishedChild > 0)
-		{
-			// Decrement amount of processes running
-			running--;
-			for (int i= 0; i < 20; i++)
-			{
-				if(processTable[i].occupied == 1 && processTable[i].pid == finishedChild)
-				{
-					processTable[i].occupied = 0;
-					break;
-				}
-			}
-		}
-		incrementClock();
+	}
+	printf("Total processes launched: %d\n", total);
+	printf("Total messages sent by OSS: %d\n", msgsnt);
+	if (logging)
+	{
+		fprintf(logfile, "Total processes launched: %d\n", total);
+		fprintf(logfile, "Total messages sent by OSS: %d\n", msgsnt);
+	}
+	
+	// Detach from shared memory and remove it
+	if(shmdt(shm_ptr) == -1)
+	{
+		perror("shmdt failed");
+		exit(1);
+	}
+	if (shmctl(shm_id, IPC_RMID, NULL) == -1)
+	{
+		perror("shmctl failed");
+		exit(1);
+	}
 
-*/	}
-}
+	// Remove the message queue
+	if (msgctl(msqid, IPC_RMID, NULL) == -1)
+	{
+		perror("msgctl failed");
+		exit(1);
+	}
+
 	return 0;
 
 }
