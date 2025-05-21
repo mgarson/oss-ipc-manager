@@ -1,9 +1,3 @@
-// Operating Systems Project 3
-// Author: Maija Garson
-// Data: 03/21/2025
-// Description: Program that launches from parent process. This process iterate through a loop until the time specified to end. This time is passed in by the parent and is then randomized with 
-// //the passed value as upper bound. In the loop, it prints it's PID, parent's PID, its term time,  and the system timeIt sends a message of 1 to parent if it is still running, or 0 if it will end.
-
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>

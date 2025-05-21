@@ -1,12 +1,3 @@
-// Operating Systems Project 3
-// Author: Maija Garson
-// Date: 03/21/2025
-// Descriptions: A program that takesin command line options to run child processes up to a given amount. These processes will run
-// simultaneously up to the specified amount. The child process will continue to run up until a specified time and will execute at
-// specified intervals. This program also maintains and increments a clock that the children use to keep track of time. All relevant
-// info is stored in a Process Control Block (PCB) table that prints every half second. This program will send and receive messages
-// to/from the child process(es) incrementally to determine when any child process has ended.
-
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/wait.h>
